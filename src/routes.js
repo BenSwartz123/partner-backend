@@ -347,7 +347,7 @@ function createRoutes(db) {
       WHERE tm.submission_id = ?
     `).all(sub.id);
 
-    const chatMessages = req.user.role === "board"
+    const chatMessages = (req.user.role === "board" || (req.user.role === "founder" && sub.user_id === req.user.id))
       ? db.prepare(`
           SELECT cm.*, u.name as author_name
           FROM chat_messages cm JOIN users u ON cm.user_id = u.id
@@ -356,6 +356,20 @@ function createRoutes(db) {
         `).all(sub.id)
       : [];
 
+    const partnerships = db.prepare(`
+      SELECT p.*, u.name as partner_name, u.specialty as partner_specialty
+      FROM partnerships p JOIN users u ON p.user_id = u.id
+      WHERE p.submission_id = ?
+      ORDER BY p.created_at ASC
+    `).all(sub.id);
+
+    const meetingRequests = db.prepare(`
+      SELECT mr.*, u.name as requester_name, u.specialty as requester_specialty
+      FROM meeting_requests mr JOIN users u ON mr.user_id = u.id
+      WHERE mr.submission_id = ?
+      ORDER BY mr.created_at DESC
+    `).all(sub.id);
+
     res.json({
       submission: {
         ...sub,
@@ -363,6 +377,8 @@ function createRoutes(db) {
         notes,
         tagged_members: tagged,
         chat_messages: chatMessages,
+        partnerships,
+        meeting_requests: meetingRequests,
       },
     });
   });
@@ -477,11 +493,19 @@ function createRoutes(db) {
     
     Sends a message in a submission's discussion thread.
   */
-  router.post("/submissions/:id/chat", requireAuth, requireRole("board"), (req, res) => {
+  router.post("/submissions/:id/chat", requireAuth, (req, res) => {
     const { text } = req.body;
 
     if (!text || !text.trim()) {
       return res.status(400).json({ error: "Message text is required" });
+    }
+
+    // Board can chat on any submission, founders only on their own
+    if (req.user.role === "founder") {
+      const sub = db.prepare("SELECT user_id FROM submissions WHERE id = ?").get(req.params.id);
+      if (!sub || sub.user_id !== req.user.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
     }
 
     const result = db.prepare(
@@ -495,6 +519,198 @@ function createRoutes(db) {
     `).get(result.lastInsertRowid);
 
     res.status(201).json({ message });
+  });
+
+  // ===========================================================
+  // PARTNERSHIP ROUTES
+  // ===========================================================
+
+  /*
+    POST /api/submissions/:id/partner
+    
+    Board member claims a Partner spot on a submission.
+    Max 3 partners per submission.
+  */
+  router.post("/submissions/:id/partner", requireAuth, requireRole("board"), (req, res) => {
+    const subId = req.params.id;
+
+    // Check submission exists
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(subId);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    // Check if already partnered
+    const existing = db.prepare(
+      "SELECT id FROM partnerships WHERE submission_id = ? AND user_id = ?"
+    ).get(subId, req.user.id);
+    if (existing) return res.status(409).json({ error: "You have already requested to partner" });
+
+    // Check max 3 active partners (pending or accepted)
+    const count = db.prepare(
+      "SELECT COUNT(*) as count FROM partnerships WHERE submission_id = ? AND status IN ('pending', 'accepted')"
+    ).get(subId).count;
+    if (count >= 3) return res.status(400).json({ error: "Maximum 3 partners reached for this submission" });
+
+    const result = db.prepare(
+      "INSERT INTO partnerships (submission_id, user_id) VALUES (?, ?)"
+    ).run(subId, req.user.id);
+
+    const partnership = db.prepare(`
+      SELECT p.*, u.name as partner_name, u.specialty as partner_specialty
+      FROM partnerships p JOIN users u ON p.user_id = u.id
+      WHERE p.id = ?
+    `).get(result.lastInsertRowid);
+
+    res.status(201).json({ partnership });
+  });
+
+  /*
+    DELETE /api/submissions/:id/partner
+    
+    Board member withdraws their partner request (only if still pending).
+  */
+  router.delete("/submissions/:id/partner", requireAuth, requireRole("board"), (req, res) => {
+    const result = db.prepare(
+      "DELETE FROM partnerships WHERE submission_id = ? AND user_id = ? AND status = 'pending'"
+    ).run(req.params.id, req.user.id);
+
+    if (result.changes === 0) {
+      return res.status(400).json({ error: "No pending partnership to withdraw" });
+    }
+    res.json({ success: true });
+  });
+
+  /*
+    GET /api/submissions/:id/partners
+    
+    Get all partner requests for a submission.
+    Board sees all. Founder sees only for their own submissions.
+  */
+  router.get("/submissions/:id/partners", requireAuth, (req, res) => {
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(req.params.id);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    // Founders can only see partners for their own submissions
+    if (req.user.role === "founder" && sub.user_id !== req.user.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const partners = db.prepare(`
+      SELECT p.*, u.name as partner_name, u.specialty as partner_specialty
+      FROM partnerships p JOIN users u ON p.user_id = u.id
+      WHERE p.submission_id = ?
+      ORDER BY p.created_at ASC
+    `).all(req.params.id);
+
+    res.json({ partners });
+  });
+
+  /*
+    PATCH /api/partnerships/:id/respond
+    
+    Founder accepts or declines a partnership request.
+  */
+  router.patch("/partnerships/:id/respond", requireAuth, requireRole("founder"), (req, res) => {
+    const { response } = req.body;
+    if (!["accepted", "declined"].includes(response)) {
+      return res.status(400).json({ error: "Response must be 'accepted' or 'declined'" });
+    }
+
+    // Verify this partnership belongs to the founder's submission
+    const partnership = db.prepare(`
+      SELECT p.*, s.user_id as founder_id
+      FROM partnerships p
+      JOIN submissions s ON p.submission_id = s.id
+      WHERE p.id = ?
+    `).get(req.params.id);
+
+    if (!partnership) return res.status(404).json({ error: "Partnership not found" });
+    if (partnership.founder_id !== req.user.id) return res.status(403).json({ error: "Access denied" });
+    if (partnership.status !== "pending") return res.status(400).json({ error: "Partnership already responded to" });
+
+    db.prepare(
+      "UPDATE partnerships SET status = ?, responded_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(response, req.params.id);
+
+    res.json({ success: true, status: response });
+  });
+
+  // ===========================================================
+  // MEETING REQUEST ROUTES
+  // ===========================================================
+
+  /*
+    POST /api/submissions/:id/meeting
+    
+    Board member requests a meeting with the founder.
+    Creates a meeting request AND posts a chat message.
+  */
+  router.post("/submissions/:id/meeting", requireAuth, requireRole("board"), (req, res) => {
+    const { message } = req.body;
+    const subId = req.params.id;
+
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(subId);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    const meetingMsg = message || "I'd like to schedule a meeting to discuss your submission.";
+
+    // Create the meeting request record
+    const result = db.prepare(
+      "INSERT INTO meeting_requests (submission_id, user_id, message) VALUES (?, ?, ?)"
+    ).run(subId, req.user.id, meetingMsg);
+
+    // Also post it as a chat message so the founder sees it
+    const boardUser = db.prepare("SELECT name FROM users WHERE id = ?").get(req.user.id);
+    const chatText = `[Meeting Request] ${boardUser.name} would like to meet: "${meetingMsg}"`;
+    
+    db.prepare(
+      "INSERT INTO chat_messages (submission_id, user_id, text) VALUES (?, ?, ?)"
+    ).run(subId, req.user.id, chatText);
+
+    const meetingRequest = db.prepare(`
+      SELECT mr.*, u.name as requester_name, u.specialty as requester_specialty
+      FROM meeting_requests mr JOIN users u ON mr.user_id = u.id
+      WHERE mr.id = ?
+    `).get(result.lastInsertRowid);
+
+    res.status(201).json({ meetingRequest });
+  });
+
+  /*
+    GET /api/my/partnerships
+    
+    Founder gets all partnership requests across their submissions.
+  */
+  router.get("/my/partnerships", requireAuth, requireRole("founder"), (req, res) => {
+    const partnerships = db.prepare(`
+      SELECT p.*, u.name as partner_name, u.specialty as partner_specialty,
+             s.company_name, s.one_liner, s.id as submission_id
+      FROM partnerships p
+      JOIN users u ON p.user_id = u.id
+      JOIN submissions s ON p.submission_id = s.id
+      WHERE s.user_id = ?
+      ORDER BY p.created_at DESC
+    `).all(req.user.id);
+
+    res.json({ partnerships });
+  });
+
+  /*
+    GET /api/my/meetings
+    
+    Founder gets all meeting requests across their submissions.
+  */
+  router.get("/my/meetings", requireAuth, requireRole("founder"), (req, res) => {
+    const meetings = db.prepare(`
+      SELECT mr.*, u.name as requester_name, u.specialty as requester_specialty,
+             s.company_name, s.id as submission_id
+      FROM meeting_requests mr
+      JOIN users u ON mr.user_id = u.id
+      JOIN submissions s ON mr.submission_id = s.id
+      WHERE s.user_id = ?
+      ORDER BY mr.created_at DESC
+    `).all(req.user.id);
+
+    res.json({ meetings });
   });
 
   // ===========================================================
