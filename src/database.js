@@ -174,6 +174,23 @@ async function initializeDatabase() {
       enabled         INTEGER NOT NULL DEFAULT 1,
       UNIQUE(user_id, notif_type)
     );
+    CREATE TABLE IF NOT EXISTS partnerships (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id   INTEGER NOT NULL REFERENCES submissions(id),
+      user_id         INTEGER NOT NULL REFERENCES users(id),
+      status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'accepted', 'declined')),
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      responded_at    DATETIME,
+      UNIQUE(submission_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS meeting_requests (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id   INTEGER NOT NULL REFERENCES submissions(id),
+      user_id         INTEGER NOT NULL REFERENCES users(id),
+      message         TEXT,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   return db;
