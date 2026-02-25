@@ -229,6 +229,59 @@ async function initializeDatabase() {
     );
   `);
 
+  // Migrations: run every startup to ensure new features exist on old databases
+  try {
+    // Try inserting admin - if it fails due to CHECK constraint, recreate users table
+    const adminExists = db.prepare("SELECT id FROM users WHERE email = 'admin@partner.io'").get();
+    if (!adminExists) {
+      const hp = bcrypt.hashSync("Demo1234!", 10);
+      try {
+        db.prepare(
+          "INSERT INTO users (email, password, name, role, bio) VALUES (?, ?, ?, 'admin', 'Platform Administrator')"
+        ).run("admin@partner.io", hp, "Ben Swartz");
+        console.log("Admin user created.");
+      } catch (checkErr) {
+        // Old CHECK constraint doesn't include 'admin' - need to recreate table
+        console.log("Updating users table to support admin role...");
+        db._db.run("PRAGMA foreign_keys = OFF");
+        db._db.run("ALTER TABLE users RENAME TO users_old");
+        db._db.run(`CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT NOT NULL UNIQUE,
+          password TEXT NOT NULL,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('founder', 'board', 'admin')),
+          specialty TEXT, bio TEXT, linkedin TEXT, website TEXT, location TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+        db._db.run("INSERT INTO users SELECT * FROM users_old");
+        db._db.run("DROP TABLE users_old");
+        db._db.run("PRAGMA foreign_keys = ON");
+        db._save();
+        // Now insert admin
+        db.prepare(
+          "INSERT INTO users (email, password, name, role, bio) VALUES (?, ?, ?, 'admin', 'Platform Administrator')"
+        ).run("admin@partner.io", hp, "Ben Swartz");
+        console.log("Admin user created after table migration.");
+      }
+    }
+
+    // Ensure default platform settings exist
+    const settingsExist = db.prepare("SELECT key FROM platform_settings LIMIT 1").get();
+    if (!settingsExist) {
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("platform_name", "Partner");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_1_rate", "3.0");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_1_max", "5000000");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_2_rate", "2.0");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_2_max", "20000000");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_3_rate", "1.5");
+      db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("max_partners_per_submission", "3");
+      console.log("Default platform settings created.");
+    }
+  } catch (e) {
+    console.log("Migration note:", e.message);
+  }
+
   return db;
 }
 
