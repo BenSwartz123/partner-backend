@@ -1109,6 +1109,45 @@ function createRoutes(db) {
     res.status(201).json({ message });
   });
 
+  /*
+    GET /api/my/admin-messages
+    Board member sees their messages with admin.
+  */
+  router.get("/my/admin-messages", requireAuth, requireRole("board"), (req, res) => {
+    const messages = db.prepare(`
+      SELECT am.*, u.name as from_name, u.role as from_role
+      FROM admin_messages am JOIN users u ON am.from_user_id = u.id
+      WHERE am.from_user_id = ? OR am.to_user_id = ?
+      ORDER BY am.created_at ASC
+    `).all(req.user.id, req.user.id);
+    
+    const admin = db.prepare("SELECT id, name FROM users WHERE role = 'admin' LIMIT 1").get();
+    res.json({ messages, admin });
+  });
+
+  /*
+    POST /api/my/admin-messages
+    Board member replies to admin.
+  */
+  router.post("/my/admin-messages", requireAuth, requireRole("board"), (req, res) => {
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "Message required" });
+    
+    const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+    if (!admin) return res.status(404).json({ error: "No admin found" });
+
+    const result = db.prepare(
+      "INSERT INTO admin_messages (from_user_id, to_user_id, text) VALUES (?, ?, ?)"
+    ).run(req.user.id, admin.id, text);
+
+    const message = db.prepare(`
+      SELECT am.*, u.name as from_name, u.role as from_role
+      FROM admin_messages am JOIN users u ON am.from_user_id = u.id
+      WHERE am.id = ?
+    `).get(result.lastInsertRowid);
+    res.status(201).json({ message });
+  });
+
   // ===========================================================
   // BOARD MEMBERS LIST (for tagging UI)
   // ===========================================================
