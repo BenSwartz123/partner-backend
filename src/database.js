@@ -116,7 +116,7 @@ async function initializeDatabase() {
       email       TEXT NOT NULL UNIQUE,
       password    TEXT NOT NULL,
       name        TEXT NOT NULL,
-      role        TEXT NOT NULL CHECK(role IN ('founder', 'board')),
+      role        TEXT NOT NULL CHECK(role IN ('founder', 'board', 'admin')),
       specialty   TEXT,
       bio         TEXT,
       linkedin    TEXT,
@@ -206,6 +206,27 @@ async function initializeDatabase() {
       title           TEXT,
       created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS platform_settings (
+      key             TEXT PRIMARY KEY,
+      value           TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS admin_messages (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_user_id    INTEGER NOT NULL REFERENCES users(id),
+      to_user_id      INTEGER NOT NULL REFERENCES users(id),
+      text            TEXT NOT NULL,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS board_invitations (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      suggested_by    INTEGER NOT NULL REFERENCES users(id),
+      name            TEXT NOT NULL,
+      email           TEXT NOT NULL,
+      reason          TEXT,
+      status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending', 'approved', 'declined')),
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   return db;
@@ -232,6 +253,16 @@ function seedDatabase(db) {
     insertUser.run("aisha@partner.io", hp, "Aisha Patel", "board", "AI & Deep Tech", null, null);
     insertUser.run("david@partner.io", hp, "David Chen", "board", "Operations & Growth", null, null);
     insertUser.run("maya@partner.io", hp, "Maya Roberts", "board", "Impact & CleanTech", null, null);
+    insertUser.run("admin@partner.io", hp, "Ben Swartz", "admin", null, "Platform Administrator", null);
+
+    // Default platform settings
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("platform_name", "Partner");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_1_rate", "3.0");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_1_max", "5000000");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_2_rate", "2.0");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_2_max", "20000000");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_3_rate", "1.5");
+    db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("max_partners_per_submission", "3");
 
     const insertSub = db.prepare(
       "INSERT INTO submissions (user_id, company_name, one_liner, industry, stage, team_size, website, problem, solution, traction, looking_for, funding_target, status, rating, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
