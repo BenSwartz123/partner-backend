@@ -918,6 +918,198 @@ function createRoutes(db) {
   });
 
   // ===========================================================
+  // ADMIN ROUTES
+  // ===========================================================
+
+  /*
+    POST /api/admin/board-members
+    Create a new board member account. Admin only.
+  */
+  router.post("/admin/board-members", requireAuth, requireRole("admin"), (req, res) => {
+    const { name, email, password, specialty } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: "Name, email, and password required" });
+
+    const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email.toLowerCase());
+    if (existing) return res.status(409).json({ error: "Email already exists" });
+
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    const result = db.prepare(
+      "INSERT INTO users (email, password, name, role, specialty) VALUES (?, ?, ?, 'board', ?)"
+    ).run(email.toLowerCase(), hashedPassword, name, specialty || null);
+
+    const user = db.prepare("SELECT id, email, name, role, specialty FROM users WHERE id = ?").get(result.lastInsertRowid);
+    res.status(201).json({ user });
+  });
+
+  /*
+    DELETE /api/admin/board-members/:id
+    Remove a board member. Admin only.
+  */
+  router.delete("/admin/board-members/:id", requireAuth, requireRole("admin"), (req, res) => {
+    const user = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'board'").get(req.params.id);
+    if (!user) return res.status(404).json({ error: "Board member not found" });
+    db.prepare("DELETE FROM users WHERE id = ? AND role = 'board'").run(req.params.id);
+    res.json({ success: true });
+  });
+
+  /*
+    GET /api/admin/all-board-members
+    Get all board members with activity stats. Admin only.
+  */
+  router.get("/admin/all-board-members", requireAuth, requireRole("admin"), (req, res) => {
+    const members = db.prepare(`
+      SELECT u.id, u.name, u.email, u.specialty, u.created_at,
+        (SELECT COUNT(*) FROM board_notes WHERE user_id = u.id) as notes_count,
+        (SELECT COUNT(*) FROM partnerships WHERE user_id = u.id) as partnerships_count,
+        (SELECT COUNT(*) FROM partnerships WHERE user_id = u.id AND status = 'accepted') as accepted_partnerships,
+        (SELECT COUNT(*) FROM chat_messages WHERE user_id = u.id) as messages_count
+      FROM users u WHERE u.role = 'board'
+      ORDER BY u.name
+    `).all();
+    res.json({ members });
+  });
+
+  /*
+    GET /api/admin/analytics
+    Full platform analytics. Admin only.
+  */
+  router.get("/admin/analytics", requireAuth, requireRole("admin"), (req, res) => {
+    const total = db.prepare("SELECT COUNT(*) as count FROM submissions").get().count;
+    const byStatus = db.prepare("SELECT status, COUNT(*) as count FROM submissions GROUP BY status").all();
+    const approved = db.prepare("SELECT COUNT(*) as count FROM submissions WHERE status = 'approved'").get().count;
+    const passed = db.prepare("SELECT COUNT(*) as count FROM submissions WHERE status = 'passed'").get().count;
+    const totalPartnerships = db.prepare("SELECT COUNT(*) as count FROM partnerships WHERE status = 'accepted'").get().count;
+    const pendingPartnerships = db.prepare("SELECT COUNT(*) as count FROM partnerships WHERE status = 'pending'").get().count;
+    const totalMeetings = db.prepare("SELECT COUNT(*) as count FROM meeting_requests").get().count;
+    const totalFounders = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'founder'").get().count;
+    const totalBoard = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'board'").get().count;
+
+    // Board leaderboard
+    const leaderboard = db.prepare(`
+      SELECT u.id, u.name, u.specialty,
+        (SELECT COUNT(*) FROM board_notes WHERE user_id = u.id) as notes,
+        (SELECT COUNT(*) FROM partnerships WHERE user_id = u.id AND status = 'accepted') as deals,
+        (SELECT COUNT(*) FROM chat_messages WHERE user_id = u.id) as messages,
+        (SELECT COUNT(*) FROM meeting_requests WHERE user_id = u.id) as meetings
+      FROM users u WHERE u.role = 'board'
+      ORDER BY (
+        (SELECT COUNT(*) FROM board_notes WHERE user_id = u.id) +
+        (SELECT COUNT(*) FROM partnerships WHERE user_id = u.id AND status = 'accepted') * 5 +
+        (SELECT COUNT(*) FROM meeting_requests WHERE user_id = u.id) * 3
+      ) DESC
+    `).all();
+
+    // Recent activity
+    const recentNotes = db.prepare(`
+      SELECT bn.created_at, u.name as user_name, s.company_name, 'note' as type
+      FROM board_notes bn
+      JOIN users u ON bn.user_id = u.id
+      JOIN submissions s ON bn.submission_id = s.id
+      ORDER BY bn.created_at DESC LIMIT 5
+    `).all();
+
+    const recentPartnerships = db.prepare(`
+      SELECT p.created_at, u.name as user_name, s.company_name, p.status, 'partnership' as type
+      FROM partnerships p
+      JOIN users u ON p.user_id = u.id
+      JOIN submissions s ON p.submission_id = s.id
+      ORDER BY p.created_at DESC LIMIT 5
+    `).all();
+
+    const recentMeetings = db.prepare(`
+      SELECT mr.created_at, u.name as user_name, s.company_name, 'meeting' as type
+      FROM meeting_requests mr
+      JOIN users u ON mr.user_id = u.id
+      JOIN submissions s ON mr.submission_id = s.id
+      ORDER BY mr.created_at DESC LIMIT 5
+    `).all();
+
+    const activity = [...recentNotes, ...recentPartnerships, ...recentMeetings]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 10);
+
+    res.json({
+      total, byStatus, approved, passed, totalPartnerships, pendingPartnerships,
+      totalMeetings, totalFounders, totalBoard, leaderboard, activity,
+      approvalRate: (approved + passed) > 0 ? Math.round((approved / (approved + passed)) * 100) : 0,
+    });
+  });
+
+  /*
+    GET/PUT /api/admin/settings
+    Platform settings. Admin only.
+  */
+  router.get("/admin/settings", requireAuth, requireRole("admin"), (req, res) => {
+    const rows = db.prepare("SELECT key, value FROM platform_settings").all();
+    const settings = {};
+    rows.forEach(r => settings[r.key] = r.value);
+    res.json({ settings });
+  });
+
+  router.put("/admin/settings", requireAuth, requireRole("admin"), (req, res) => {
+    const { settings } = req.body;
+    if (!settings) return res.status(400).json({ error: "Settings object required" });
+    Object.entries(settings).forEach(([key, value]) => {
+      db.prepare("INSERT OR REPLACE INTO platform_settings (key, value) VALUES (?, ?)").run(key, String(value));
+    });
+    res.json({ success: true });
+  });
+
+  /*
+    Board invitation suggestions (from board members)
+  */
+  router.post("/suggest-board-member", requireAuth, requireRole("board"), (req, res) => {
+    const { name, email, reason } = req.body;
+    if (!name || !email) return res.status(400).json({ error: "Name and email required" });
+    db.prepare(
+      "INSERT INTO board_invitations (suggested_by, name, email, reason) VALUES (?, ?, ?, ?)"
+    ).run(req.user.id, name, email, reason || null);
+    res.status(201).json({ success: true });
+  });
+
+  router.get("/admin/invitations", requireAuth, requireRole("admin"), (req, res) => {
+    const invitations = db.prepare(`
+      SELECT bi.*, u.name as suggested_by_name
+      FROM board_invitations bi JOIN users u ON bi.suggested_by = u.id
+      ORDER BY bi.created_at DESC
+    `).all();
+    res.json({ invitations });
+  });
+
+  router.patch("/admin/invitations/:id", requireAuth, requireRole("admin"), (req, res) => {
+    const { status } = req.body;
+    if (!["approved", "declined"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+    db.prepare("UPDATE board_invitations SET status = ? WHERE id = ?").run(status, req.params.id);
+    res.json({ success: true, status });
+  });
+
+  /*
+    Admin messaging with board members
+  */
+  router.get("/admin/messages/:userId", requireAuth, requireRole("admin"), (req, res) => {
+    const messages = db.prepare(`
+      SELECT am.*, u.name as from_name, u.role as from_role
+      FROM admin_messages am JOIN users u ON am.from_user_id = u.id
+      WHERE (am.from_user_id = ? AND am.to_user_id = ?) OR (am.from_user_id = ? AND am.to_user_id = ?)
+      ORDER BY am.created_at ASC
+    `).all(req.user.id, req.params.userId, req.params.userId, req.user.id);
+    res.json({ messages });
+  });
+
+  router.post("/admin/messages/:userId", requireAuth, requireRole("admin"), (req, res) => {
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "Message required" });
+    const result = db.prepare(
+      "INSERT INTO admin_messages (from_user_id, to_user_id, text) VALUES (?, ?, ?)"
+    ).run(req.user.id, req.params.userId, text);
+    const message = db.prepare(`
+      SELECT am.*, u.name as from_name, u.role as from_role
+      FROM admin_messages am JOIN users u ON am.from_user_id = u.id
+      WHERE am.id = ?
+    `).get(result.lastInsertRowid);
+    res.status(201).json({ message });
+  });
+
+  // ===========================================================
   // BOARD MEMBERS LIST (for tagging UI)
   // ===========================================================
 
