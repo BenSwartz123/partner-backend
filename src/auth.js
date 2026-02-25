@@ -95,6 +95,8 @@ function requireAuth(req, res, next) {
 */
 function requireRole(role) {
   return (req, res, next) => {
+    // Admin can access all roles
+    if (req.user.role === "admin") return next();
     if (req.user.role !== role) {
       return res.status(403).json({ error: `Access restricted to ${role} members` });
     }
