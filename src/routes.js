@@ -714,6 +714,144 @@ function createRoutes(db) {
   });
 
   // ===========================================================
+  // PARTNERSHIP WORKSPACE ROUTES
+  // ===========================================================
+
+  /*
+    GET /api/active-partnerships
+    
+    Returns submissions with accepted partnerships.
+    Founders see their own startups. Board members see ones they're partnered on.
+  */
+  router.get("/active-partnerships", requireAuth, (req, res) => {
+    let subs;
+    if (req.user.role === "founder") {
+      subs = db.prepare(`
+        SELECT DISTINCT s.* FROM submissions s
+        JOIN partnerships p ON p.submission_id = s.id
+        WHERE s.user_id = ? AND p.status = 'accepted'
+      `).all(req.user.id);
+    } else {
+      subs = db.prepare(`
+        SELECT DISTINCT s.* FROM submissions s
+        JOIN partnerships p ON p.submission_id = s.id
+        WHERE p.user_id = ? AND p.status = 'accepted'
+      `).all(req.user.id);
+    }
+
+    // Enrich each submission with its accepted partners
+    const enriched = subs.map(s => {
+      const partners = db.prepare(`
+        SELECT p.*, u.name as partner_name, u.specialty as partner_specialty
+        FROM partnerships p JOIN users u ON p.user_id = u.id
+        WHERE p.submission_id = ? AND p.status = 'accepted'
+      `).all(s.id);
+      const founder = db.prepare("SELECT id, name, email FROM users WHERE id = ?").get(s.user_id);
+      return { ...s, partners, founder };
+    });
+
+    res.json({ partnerships: enriched });
+  });
+
+  /*
+    GET /api/submissions/:id/partnership-chat
+    
+    Gets partnership chat messages. Only accessible by founder or accepted partners.
+  */
+  router.get("/submissions/:id/partnership-chat", requireAuth, (req, res) => {
+    const subId = req.params.id;
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(subId);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    // Check access: must be founder or accepted partner
+    const isFounder = req.user.role === "founder" && sub.user_id === req.user.id;
+    const isPartner = db.prepare(
+      "SELECT id FROM partnerships WHERE submission_id = ? AND user_id = ? AND status = 'accepted'"
+    ).get(subId, req.user.id);
+    if (!isFounder && !isPartner) return res.status(403).json({ error: "Access denied" });
+
+    const messages = db.prepare(`
+      SELECT pm.*, u.name as author_name, u.role as author_role
+      FROM partnership_messages pm JOIN users u ON pm.user_id = u.id
+      WHERE pm.submission_id = ?
+      ORDER BY pm.created_at ASC
+    `).all(subId);
+
+    const links = db.prepare(`
+      SELECT sl.*, u.name as author_name
+      FROM shared_links sl JOIN users u ON sl.user_id = u.id
+      WHERE sl.submission_id = ?
+      ORDER BY sl.created_at DESC
+    `).all(subId);
+
+    res.json({ messages, links });
+  });
+
+  /*
+    POST /api/submissions/:id/partnership-chat
+    
+    Sends a message in the partnership chat.
+  */
+  router.post("/submissions/:id/partnership-chat", requireAuth, (req, res) => {
+    const { text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ error: "Message text is required" });
+
+    const subId = req.params.id;
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(subId);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    const isFounder = req.user.role === "founder" && sub.user_id === req.user.id;
+    const isPartner = db.prepare(
+      "SELECT id FROM partnerships WHERE submission_id = ? AND user_id = ? AND status = 'accepted'"
+    ).get(subId, req.user.id);
+    if (!isFounder && !isPartner) return res.status(403).json({ error: "Access denied" });
+
+    const result = db.prepare(
+      "INSERT INTO partnership_messages (submission_id, user_id, text) VALUES (?, ?, ?)"
+    ).run(subId, req.user.id, text);
+
+    const message = db.prepare(`
+      SELECT pm.*, u.name as author_name, u.role as author_role
+      FROM partnership_messages pm JOIN users u ON pm.user_id = u.id
+      WHERE pm.id = ?
+    `).get(result.lastInsertRowid);
+
+    res.status(201).json({ message });
+  });
+
+  /*
+    POST /api/submissions/:id/shared-links
+    
+    Adds a shared link/document URL.
+  */
+  router.post("/submissions/:id/shared-links", requireAuth, (req, res) => {
+    const { url, title } = req.body;
+    if (!url || !url.trim()) return res.status(400).json({ error: "URL is required" });
+
+    const subId = req.params.id;
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(subId);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    const isFounder = req.user.role === "founder" && sub.user_id === req.user.id;
+    const isPartner = db.prepare(
+      "SELECT id FROM partnerships WHERE submission_id = ? AND user_id = ? AND status = 'accepted'"
+    ).get(subId, req.user.id);
+    if (!isFounder && !isPartner) return res.status(403).json({ error: "Access denied" });
+
+    const result = db.prepare(
+      "INSERT INTO shared_links (submission_id, user_id, url, title) VALUES (?, ?, ?, ?)"
+    ).run(subId, req.user.id, url, title || null);
+
+    const link = db.prepare(`
+      SELECT sl.*, u.name as author_name
+      FROM shared_links sl JOIN users u ON sl.user_id = u.id
+      WHERE sl.id = ?
+    `).get(result.lastInsertRowid);
+
+    res.status(201).json({ link });
+  });
+
+  // ===========================================================
   // ANALYTICS ROUTES (Board only)
   // ===========================================================
 
