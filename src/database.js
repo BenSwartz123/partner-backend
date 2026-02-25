@@ -191,6 +191,21 @@ async function initializeDatabase() {
       message         TEXT,
       created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS partnership_messages (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id   INTEGER NOT NULL REFERENCES submissions(id),
+      user_id         INTEGER NOT NULL REFERENCES users(id),
+      text            TEXT NOT NULL,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS shared_links (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id   INTEGER NOT NULL REFERENCES submissions(id),
+      user_id         INTEGER NOT NULL REFERENCES users(id),
+      url             TEXT NOT NULL,
+      title           TEXT,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   return db;
