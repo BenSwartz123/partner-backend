@@ -236,6 +236,54 @@ function createRoutes(db) {
   });
 
   /*
+    PATCH /api/submissions/:id
+    Founder edits their own submission.
+  */
+  router.patch("/submissions/:id", requireAuth, requireRole("founder"), (req, res) => {
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(req.params.id);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+    if (sub.user_id !== req.user.id) return res.status(403).json({ error: "Access denied" });
+
+    const allowed = ["company_name", "one_liner", "problem", "solution", "traction", "funding_target", "additional_notes"];
+    const updates = [];
+    const values = [];
+    for (const [key, val] of Object.entries(req.body)) {
+      if (allowed.includes(key)) {
+        updates.push(`${key} = ?`);
+        values.push(val || null);
+      }
+    }
+    if (updates.length === 0) return res.status(400).json({ error: "No valid fields to update" });
+
+    values.push(req.params.id);
+    db.prepare(`UPDATE submissions SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    const updated = db.prepare("SELECT * FROM submissions WHERE id = ?").get(req.params.id);
+    res.json({ submission: updated });
+  });
+
+  /*
+    DELETE /api/submissions/:id
+    Founder withdraws their submission. Only if status is 'new'.
+  */
+  router.delete("/submissions/:id", requireAuth, requireRole("founder"), (req, res) => {
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(req.params.id);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+    if (sub.user_id !== req.user.id) return res.status(403).json({ error: "Access denied" });
+    if (sub.status !== "new") return res.status(400).json({ error: "Can only withdraw submissions with 'Submitted' status" });
+
+    db.prepare("DELETE FROM board_notes WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM tagged_members WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM chat_messages WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM partnerships WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM meeting_requests WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM partnership_messages WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM shared_links WHERE submission_id = ?").run(req.params.id);
+    db.prepare("DELETE FROM submissions WHERE id = ?").run(req.params.id);
+
+    res.json({ success: true });
+  });
+
+  /*
     GET /api/submissions
     
     Returns submissions based on the user's role:
@@ -1139,6 +1187,44 @@ function createRoutes(db) {
     if (!["approved", "declined"].includes(status)) return res.status(400).json({ error: "Invalid status" });
     db.prepare("UPDATE board_invitations SET status = ? WHERE id = ?").run(status, req.params.id);
     res.json({ success: true, status });
+  });
+
+  /*
+    GET /api/admin/export/submissions
+    Export all submissions as CSV. Admin only.
+  */
+  router.get("/admin/export/submissions", requireAuth, requireRole("admin"), (req, res) => {
+    const subs = db.prepare(`
+      SELECT s.*, u.name as founder_name, u.email as founder_email
+      FROM submissions s JOIN users u ON s.user_id = u.id
+      ORDER BY s.submitted_at DESC
+    `).all();
+
+    const headers = ["ID","Company","One-Liner","Industry","Stage","Status","Rating","Founder","Founder Email","Submitted"];
+    const rows = subs.map(s => [
+      s.id, `"${(s.company_name||'').replace(/"/g,'""')}"`, `"${(s.one_liner||'').replace(/"/g,'""')}"`,
+      s.industry, s.stage, s.status, s.rating||'', `"${s.founder_name}"`, s.founder_email, s.submitted_at
+    ]);
+    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=partner-submissions.csv");
+    res.send(csv);
+  });
+
+  router.get("/admin/export/board", requireAuth, requireRole("admin"), (req, res) => {
+    const members = db.prepare(`
+      SELECT u.id, u.name, u.email, u.specialty, u.created_at,
+        (SELECT COUNT(*) FROM partnerships WHERE user_id = u.id AND status = 'accepted') as deals,
+        (SELECT COUNT(*) FROM board_notes WHERE user_id = u.id) as notes
+      FROM users u WHERE u.role = 'board' ORDER BY u.name
+    `).all();
+
+    const headers = ["ID","Name","Email","Specialty","Deals","Notes","Joined"];
+    const rows = members.map(m => [m.id, `"${m.name}"`, m.email, `"${m.specialty||''}"`, m.deals, m.notes, m.created_at]);
+    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=partner-board-members.csv");
+    res.send(csv);
   });
 
   /*
