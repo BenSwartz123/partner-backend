@@ -38,7 +38,23 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { createToken, requireAuth, requireRole } = require("./auth");
-const email = require("./email");
+
+// Email is optional - app works without it
+let email;
+try {
+  email = require("./email");
+  console.log("[Email] Module loaded. Enabled:", email.isEnabled());
+} catch (e) {
+  console.log("[Email] Module not available:", e.message);
+  email = {
+    isEnabled: () => false,
+    sendEmail: async () => false,
+    partnerRequestEmail: () => ({ subject: "", html: "" }),
+    meetingRequestEmail: () => ({ subject: "", html: "" }),
+    partnerResponseEmail: () => ({ subject: "", html: "" }),
+    statusChangeEmail: () => ({ subject: "", html: "" }),
+  };
+}
 
 function createRoutes(db) {
   const router = express.Router();
