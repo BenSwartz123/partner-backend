@@ -24,9 +24,11 @@ function isEnabled() {
 
 async function sendEmail(to, subject, htmlBody) {
   if (!isEnabled()) {
-    console.log(`[Email] Skipped (no API key): "${subject}" -> ${to}`);
+    console.log(`[Email] Skipped (no API key configured)`);
     return false;
   }
+
+  console.log(`[Email] Attempting: "${subject}" -> ${to} (from: ${FROM_EMAIL})`);
 
   try {
     const res = await fetch(SENDGRID_API, {
