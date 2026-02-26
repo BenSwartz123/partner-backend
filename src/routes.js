@@ -421,14 +421,16 @@ function createRoutes(db) {
     db.prepare("UPDATE submissions SET status = ? WHERE id = ?").run(status, req.params.id);
 
     // Email founder about status change
-    const sub = db.prepare("SELECT company_name, user_id FROM submissions WHERE id = ?").get(req.params.id);
-    if (sub) {
-      const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
-      if (founder) {
-        const tmpl = email.statusChangeEmail(founder.name, sub.company_name, status);
-        email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
+    try {
+      const sub = db.prepare("SELECT company_name, user_id FROM submissions WHERE id = ?").get(req.params.id);
+      if (sub) {
+        const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
+        if (founder) {
+          const tmpl = email.statusChangeEmail(founder.name, sub.company_name, status);
+          email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
+        }
       }
-    }
+    } catch (emailErr) { console.error("[Email] Error:", emailErr.message); }
 
     res.json({ success: true, status });
   });
@@ -589,11 +591,13 @@ function createRoutes(db) {
     `).get(result.lastInsertRowid);
 
     // Email founder about new partner request
-    const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
-    if (founder) {
-      const tmpl = email.partnerRequestEmail(founder.name, partnership.partner_name, partnership.partner_specialty, sub.company_name);
-      email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
-    }
+    try {
+      const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
+      if (founder && partnership) {
+        const tmpl = email.partnerRequestEmail(founder.name, partnership.partner_name, partnership.partner_specialty, sub.company_name);
+        email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
+      }
+    } catch (emailErr) { console.error("[Email] Error:", emailErr.message); }
 
     res.status(201).json({ partnership });
   });
@@ -667,13 +671,15 @@ function createRoutes(db) {
     ).run(response, req.params.id);
 
     // Email board member about the response
-    const boardMember = db.prepare("SELECT name, email FROM users WHERE id = ?").get(partnership.user_id);
-    const founderUser = db.prepare("SELECT name FROM users WHERE id = ?").get(req.user.id);
-    const sub = db.prepare("SELECT company_name FROM submissions WHERE id = ?").get(partnership.submission_id);
-    if (boardMember && founderUser && sub) {
-      const tmpl = email.partnerResponseEmail(boardMember.name, founderUser.name, sub.company_name, response === "accepted");
-      email.sendEmail(boardMember.email, tmpl.subject, tmpl.html).catch(() => {});
-    }
+    try {
+      const boardMember = db.prepare("SELECT name, email FROM users WHERE id = ?").get(partnership.user_id);
+      const founderUser = db.prepare("SELECT name FROM users WHERE id = ?").get(req.user.id);
+      const sub = db.prepare("SELECT company_name FROM submissions WHERE id = ?").get(partnership.submission_id);
+      if (boardMember && founderUser && sub) {
+        const tmpl = email.partnerResponseEmail(boardMember.name, founderUser.name, sub.company_name, response === "accepted");
+        email.sendEmail(boardMember.email, tmpl.subject, tmpl.html).catch(() => {});
+      }
+    } catch (emailErr) { console.error("[Email] Error:", emailErr.message); }
 
     res.json({ success: true, status: response });
   });
@@ -717,11 +723,13 @@ function createRoutes(db) {
     `).get(result.lastInsertRowid);
 
     // Email founder about meeting request
-    const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
-    if (founder) {
-      const tmpl = email.meetingRequestEmail(founder.name, meetingRequest.requester_name, meetingRequest.requester_specialty, sub.company_name, meetingMsg);
-      email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
-    }
+    try {
+      const founder = db.prepare("SELECT name, email FROM users WHERE id = ?").get(sub.user_id);
+      if (founder && meetingRequest) {
+        const tmpl = email.meetingRequestEmail(founder.name, meetingRequest.requester_name, meetingRequest.requester_specialty, sub.company_name, meetingMsg);
+        email.sendEmail(founder.email, tmpl.subject, tmpl.html).catch(() => {});
+      }
+    } catch (emailErr) { console.error("[Email] Error:", emailErr.message); }
 
     res.status(201).json({ meetingRequest });
   });
