@@ -232,7 +232,51 @@ function createRoutes(db) {
     `).run(req.user.id, companyName, oneLiner, industry, stage, teamSize || null, website || null, problem, solution, traction, lookingForStr, fundingTarget || null, additionalNotes || null);
 
     const submission = db.prepare("SELECT * FROM submissions WHERE id = ?").get(result.lastInsertRowid);
+
+    // Trigger AI analysis asynchronously (don't block response)
+    try {
+      const { analyzeSubmission, enabled: aiEnabled } = require("./ai-analysis");
+      if (aiEnabled) {
+        analyzeSubmission(submission).then(analysis => {
+          if (analysis) {
+            db.prepare("UPDATE submissions SET ai_analysis = ? WHERE id = ?").run(analysis, submission.id);
+            console.log(`[AI] Stored analysis for submission ${submission.id}`);
+          }
+        }).catch(e => console.error("[AI] Async error:", e.message));
+      }
+    } catch (e) {
+      console.log("[AI] Module not available:", e.message);
+    }
+
     res.status(201).json({ submission });
+  });
+
+  /*
+    POST /api/submissions/:id/ai-analysis
+    Regenerate AI analysis for a submission. Board/Admin only.
+  */
+  router.post("/submissions/:id/ai-analysis", requireAuth, (req, res) => {
+    if (req.user.role !== "board" && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    const sub = db.prepare("SELECT * FROM submissions WHERE id = ?").get(req.params.id);
+    if (!sub) return res.status(404).json({ error: "Submission not found" });
+
+    try {
+      const { analyzeSubmission, enabled: aiEnabled } = require("./ai-analysis");
+      if (!aiEnabled) return res.status(503).json({ error: "AI analysis not configured" });
+
+      analyzeSubmission(sub).then(analysis => {
+        if (analysis) {
+          db.prepare("UPDATE submissions SET ai_analysis = ? WHERE id = ?").run(analysis, sub.id);
+          res.json({ analysis: JSON.parse(analysis) });
+        } else {
+          res.status(500).json({ error: "Analysis generation failed" });
+        }
+      }).catch(e => res.status(500).json({ error: e.message }));
+    } catch (e) {
+      res.status(503).json({ error: "AI module not available" });
+    }
   });
 
   /*
