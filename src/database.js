@@ -142,6 +142,7 @@ async function initializeDatabase() {
       status          TEXT NOT NULL DEFAULT 'new'
                         CHECK(status IN ('new', 'under_review', 'more_info', 'approved', 'passed')),
       rating          REAL,
+      ai_analysis     TEXT,
       submitted_at    DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS board_notes (
@@ -268,6 +269,15 @@ async function initializeDatabase() {
 
     // Ensure default platform settings exist
     const settingsExist = db.prepare("SELECT key FROM platform_settings LIMIT 1").get();
+
+    // Add ai_analysis column if missing
+    try {
+      db.prepare("SELECT ai_analysis FROM submissions LIMIT 1").get();
+    } catch (e) {
+      db._db.run("ALTER TABLE submissions ADD COLUMN ai_analysis TEXT");
+      db._save();
+      console.log("Added ai_analysis column to submissions.");
+    }
     if (!settingsExist) {
       db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("platform_name", "Partner");
       db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES (?, ?)").run("fee_tier_1_rate", "3.0");
