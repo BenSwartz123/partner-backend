@@ -1348,6 +1348,59 @@ function createRoutes(db) {
     res.json({ members });
   });
 
+  // ============================================================
+  // BOARD PROFILES: Full profiles for board/admin, limited for founders
+  // ============================================================
+  router.get("/board-profiles", requireAuth, (req, res) => {
+    if (req.user.role === "board" || req.user.role === "admin") {
+      const members = db.prepare(
+        "SELECT id, name, specialty, bio, linkedin, website, email, location FROM users WHERE role = 'board'"
+      ).all();
+      res.json({ members, full: true });
+    } else if (req.user.role === "founder") {
+      const members = db.prepare(
+        "SELECT id, name, specialty, bio FROM users WHERE role = 'board'"
+      ).all();
+      res.json({ members, full: false });
+    } else {
+      res.status(403).json({ error: "Access denied" });
+    }
+  });
+
+  // ============================================================
+  // AI BACKFILL: Analyse any submissions that don't have AI analysis yet
+  // Runs once on server start, processes sequentially to avoid rate limits
+  // ============================================================
+  try {
+    const { analyzeSubmission, enabled: aiEnabled } = require("./ai-analysis");
+    if (aiEnabled) {
+      const missing = db.prepare("SELECT * FROM submissions WHERE ai_analysis IS NULL").all();
+      if (missing.length > 0) {
+        console.log(`[AI] Backfill: ${missing.length} submissions need analysis`);
+        (async () => {
+          for (const sub of missing) {
+            try {
+              const analysis = await analyzeSubmission(sub);
+              if (analysis) {
+                db.prepare("UPDATE submissions SET ai_analysis = ? WHERE id = ?").run(analysis, sub.id);
+                console.log(`[AI] Backfill complete: ${sub.company_name}`);
+              }
+              // Small delay between calls to avoid rate limits
+              await new Promise(r => setTimeout(r, 1000));
+            } catch (e) {
+              console.error(`[AI] Backfill error for ${sub.company_name}:`, e.message);
+            }
+          }
+          console.log("[AI] Backfill finished");
+        })();
+      } else {
+        console.log("[AI] All submissions already have analysis");
+      }
+    }
+  } catch (e) {
+    console.log("[AI] Backfill skipped:", e.message);
+  }
+
   return router;
 }
 
