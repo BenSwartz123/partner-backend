@@ -201,6 +201,33 @@ function createRoutes(db) {
     res.json({ user });
   });
 
+  // Admin: update any user's profile
+  router.put("/admin/users/:id/profile", requireAuth, requireRole("admin"), (req, res) => {
+    const { name, bio, linkedin, website, location, specialty } = req.body;
+    const updates = [];
+    const values = [];
+
+    if (name !== undefined) { updates.push("name = ?"); values.push(name); }
+    if (bio !== undefined) { updates.push("bio = ?"); values.push(bio); }
+    if (linkedin !== undefined) { updates.push("linkedin = ?"); values.push(linkedin); }
+    if (website !== undefined) { updates.push("website = ?"); values.push(website); }
+    if (location !== undefined) { updates.push("location = ?"); values.push(location); }
+    if (specialty !== undefined) { updates.push("specialty = ?"); values.push(specialty); }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: "No fields to update" });
+    }
+
+    values.push(req.params.id);
+    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+
+    const user = db.prepare(
+      "SELECT id, email, name, role, specialty, bio, linkedin, website, location FROM users WHERE id = ?"
+    ).get(req.params.id);
+
+    res.json({ user });
+  });
+
   // ===========================================================
   // SUBMISSION ROUTES
   // ===========================================================
