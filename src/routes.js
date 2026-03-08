@@ -94,14 +94,20 @@ function createRoutes(db) {
     const hashedPassword = bcrypt.hashSync(password, 10);
 
     // Insert the new user
-    const result = db.prepare(
-      "INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, 'founder')"
-    ).run(email.toLowerCase(), hashedPassword, name);
+    try {
+      const result = db.prepare(
+        "INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, 'founder')"
+      ).run(email.toLowerCase(), hashedPassword, name);
 
-    const user = db.prepare("SELECT id, email, name, role FROM users WHERE id = ?").get(result.lastInsertRowid);
-    const token = createToken(user);
+      const userId = result.lastInsertRowid;
+      const user = db.prepare("SELECT id, email, name, role FROM users WHERE id = ?").get(userId);
+      const token = createToken(user);
 
-    res.status(201).json({ user, token });
+      res.status(201).json({ user, token });
+    } catch (dbErr) {
+      console.error("[Register] DB Error:", dbErr.message);
+      res.status(500).json({ error: "Registration failed: " + dbErr.message });
+    }
   });
 
   /*
