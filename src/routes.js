@@ -95,12 +95,11 @@ function createRoutes(db) {
 
     // Insert the new user
     try {
-      const result = db.prepare(
+      db.prepare(
         "INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, 'founder')"
       ).run(email.toLowerCase(), hashedPassword, name);
 
-      const userId = result.lastInsertRowid;
-      const user = db.prepare("SELECT id, email, name, role FROM users WHERE id = ?").get(userId);
+      const user = db.prepare("SELECT id, email, name, role FROM users WHERE email = ?").get(email.toLowerCase());
       const token = createToken(user);
 
       res.status(201).json({ user, token });
