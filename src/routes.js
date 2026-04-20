@@ -258,29 +258,31 @@ function createRoutes(db) {
     // lookingFor comes as an array from the frontend, store as comma-separated
     const lookingForStr = Array.isArray(lookingFor) ? lookingFor.join(",") : lookingFor;
 
-    const result = db.prepare(`
+    db.prepare(`
       INSERT INTO submissions (user_id, company_name, one_liner, industry, stage, team_size, website, problem, solution, traction, looking_for, funding_target, additional_notes)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(req.user.id, companyName, oneLiner, industry, stage, teamSize || null, website || null, problem, solution, traction, lookingForStr, fundingTarget || null, additionalNotes || null);
 
-    const submission = db.prepare("SELECT * FROM submissions WHERE id = ?").get(result.lastInsertRowid);
+    const submission = db.prepare("SELECT * FROM submissions WHERE user_id = ? AND company_name = ? ORDER BY id DESC LIMIT 1").get(req.user.id, companyName);
 
     // Trigger AI analysis asynchronously (don't block response)
-    try {
-      const { analyzeSubmission, enabled: aiEnabled } = require("./ai-analysis");
-      if (aiEnabled) {
-        analyzeSubmission(submission).then(analysis => {
-          if (analysis) {
-            db.prepare("UPDATE submissions SET ai_analysis = ? WHERE id = ?").run(analysis, submission.id);
-            console.log(`[AI] Stored analysis for submission ${submission.id}`);
-          }
-        }).catch(e => console.error("[AI] Async error:", e.message));
+    if (submission) {
+      try {
+        const { analyzeSubmission, enabled: aiEnabled } = require("./ai-analysis");
+        if (aiEnabled) {
+          analyzeSubmission(submission).then(analysis => {
+            if (analysis) {
+              db.prepare("UPDATE submissions SET ai_analysis = ? WHERE id = ?").run(analysis, submission.id);
+              console.log(`[AI] Stored analysis for submission ${submission.id}`);
+            }
+          }).catch(e => console.error("[AI] Async error:", e.message));
+        }
+      } catch (e) {
+        console.log("[AI] Module not available:", e.message);
       }
-    } catch (e) {
-      console.log("[AI] Module not available:", e.message);
     }
 
-    res.status(201).json({ submission });
+    res.status(201).json({ submission: submission || {} });
   });
 
   /*
